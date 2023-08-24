@@ -1,0 +1,86 @@
+library(KEGGREST)
+library(topGO)
+library(ggplot2)
+library(stringr)
+library("org.Anigrocauda.eg.db")
+library(pathview)
+
+library("clusterProfiler")
+
+count2<-brain_count %>% dplyr::select(starts_with(c("0h","Re1.5h")))
+count3<-count2%>% filter(rowSums(. > 5) > 2)
+
+deg<-read.csv("DEGs_0h_vs_Re4.5h.csv")
+pv2<-deg$pvalue
+names(pv2)<-deg$Row.names
+
+#term2gene <-read.csv("../../00.data/all_genes.go.csv")
+#term2gene<-term2gene[,c(2,1)]
+#sed -i 's/"//g'  go2genes.txt
+
+
+go2gene<-readMappings("../../00.data/go2genes.txt")
+
+selection <- function(x) TRUE
+GOdata <- new("topGOdata", ontology="BP", allGenes=pv2,annot=annFUN.GO2genes, GO2genes=go2gene,geneSel=selection, nodeSize=3)
+#finally got it ready!!!
+
+resultKS <- runTest(GOdata, algorithm = "weight01", statistic = "ks")
+tab <- GenTable(GOdata, raw.p.value = resultKS, topNodes = 15, numChar = 120)
+
+
+resultFisher <- runTest(GOdata, algorithm = "classic", statistic = "fisher")
+# Extract the top terms based on p-value
+topTerms <- GenTable(GOdata, classicFisher = resultFisher, orderBy = "classicFisher", ranksOf = "classicFisher", topNodes = 20)
+
+# Bar plot of the -log10 of the p-values
+barplot(-log10(tab$raw.p.value), names.arg = tab$Term, las = 2, main = "Enrichment Analysis", ylab = "-log10(p-value)", col = "skyblue",cex.names = 0.7)
+
+#load result from TopGO to clusterProfiler
+enrichResult_object <- new("enrichResult")
+enrichResult_object@result <- tab[, c("GO.ID", "Term", "Annotated",  "raw.p.value")]
+
+colnames(enrichResult_object@result) <- c("ID","Description","Count","pvalue")
+enrichResult_object@result$pvalue <- as.numeric(enrichResult_object@result$pvalue)
+
+# It's important to correct the names so that they match what clusterProfiler expects
+rownames(enrichResult_object@result) <- tab$GO.ID
+barplot(enrichResult_object, showCategory=10)
+
+
+
+
+# Create the rainbow bar plot with ggplot2
+ num_terms <- nrow(tab)
+plot <- ggplot(tab, aes(x = reorder(Term,-as.numeric(raw.p.value)), y = -log10(as.numeric(raw.p.value)), fill = Term)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = rainbow(num_terms)) +  # Use rainbow palette for colors
+  coord_flip() + 
+  labs(y = "-log10(p-value)", x = "GO Term", title = "TopGO Enrichment Analysis") +
+  theme_minimal() +
+  guides(fill = "none") 
+
+tiff(filename = "GO.bar.tiff",res = 300,width = 160,height = 100,compression = "lzw",units = "mm")
+par(mgp=c(1.5,0.5,0),cex.axis=0.7,mar=c(2.5,2.5,2,0.5)+0.1)
+print(plot)
+dev.off()
+
+#   画GO网络图
+printGraph(GOdata,resultKS,firstSigNodes = 5,fn.prefix = "tGO",useInfo = "pval",pdfSW = TRUE)
+
+
+
+==================================================
+#use enricher
+deg<-read.csv("DEGs_0h_vs_Re4.5h.csv")[,"Row.names"]
+bg<-read.csv("DEGs_0h_vs_Re4.5h.bg.csv")[,"X"]
+
+term2gene <-read.csv("../../00.data/all_genes.go.csv")
+term2gene<-term2gene[,c(2,1)]
+term2name<-read.csv("../../00.data/term2name.csv")
+
+ego2<-enricher(gene=deg,  pvalueCutoff = 0.05,pAdjustMethod = "BH",universe=bg,minGSSize = 2,maxGSSize = 500,qvalueCutoff = 0.2,TERM2GENE=term2gene,TERM2NAME = term2name)
+  
+###allGO2genes <- annFUN.org(whichOnto="BP", feasibleGenes=NULL, mapping="org.Anigrocauda.eg.db", ID="GID")
+sampleGOdata <- new("topGOdata",ontology = "BP",allGenes = pv2,nodeSize = 10,annot = annFUN.org,mapping = "org.Anigrocauda.eg.db",ID = "GID")
+

@@ -1,0 +1,148 @@
+#1. rna-seq deg analysis
+#rna-seq reads mapping
+bowtie2 -p 10 -x /fdb/igenomes/Mus_musculus/Ensembl/GRCm38/Sequence/Bowtie2Index/genome -U SRR8903672.fastq |samtools sort -@ 10 -o s3672.bam -
+
+for i in 12 34 56 78; do  echo "featureCounts -T 10 -p -a /fdb/igenomes/Mus_musculus/NCBI/GRCm38/Annotation/Genes/genes.gtf -o s${i}.count s${i}.bam"; done >count.sh
+
+swarm -g 20 -t 10 -m subread --time-per-command 5:00:00 --job-name count -f count.sh --qos=staff
+
+
+
+featureCounts -T 10 -p -a /fdb/ensembl/pub/release-100/gtf/mus_musculus/Mus_musculus.GRCm38.100.chr.gtf -o s_all.count s12.bam s34.bam s56.bam s78.bam
+less s_all.count|perl -e '{while(<>){if(/^ENS/){@t=split;print "$t[0]\t$t[5]\n";}}}'>mm_gene_length.txt
+
+##########   R
+library(pacman)
+pacman::p_load("DESeq2","dplyr","stringr")
+pacman::p_load("tibble","pheatmap","data.table","clusterProfiler","VennDiagram")
+pacman::p_load("org.Mm.eg.db")
+
+setwd("/data/fub3/sra/rna_chip/02.dge/")
+df<-read.table("s_all.count",head=T)[,c(1,7:10)]
+colnames(df)<-c("ID","ES1","ES2","CT1","CT2")
+df<-column_to_rownames(df,"ID")
+group<-factor(c("ES","ES","CT","CT"),levels = c("CT","ES"))
+coldata<-data.frame(row.names = colnames(df),group=group)
+dds<-DESeqDataSetFromMatrix(countData = df,colData = coldata,design = ~group)
+dds2<-DESeq(dds)
+
+res<-results(dds2)
+res_df<-as.data.frame(res)
+
+
+res_df$change <-ifelse(res_df$pvalue<0.05 & res_df$log2FoldChange>1,'up',
+                ifelse(res_df$pvalue<0.05 & res_df$log2FoldChange<1,'down','NoChange'))
+
+deg<-res_df[which(res_df$change=='up' |res_df$change=='down'),]
+deg_genes<-rownames(deg)
+
+gene_length<-fread("mm_gene_length.txt")
+colnames(gene_length)<-c("id","length")
+gene_length<-as.data.frame(gene_length)
+gene_length<-gene_length[!duplicated(gene_length$id),]
+
+exp<-as.data.frame(df)
+exp$id<-unlist(lapply(rownames(exp),function(x){str_split(x,'\\.',simplify = T)[,1]}))
+
+merge<-left_join(x=exp,y=gene_length,by='id')
+merge<-na.omit(merge)
+merge<-merge[!duplicated(merge$id),]
+rownames(merge)<-merge$id
+
+head(merge)
+kb<-merge$length/1000
+rpk<-merge[,-5]/kb
+tpm<-t(t(rpk)/colSums(rpk)*1E6)
+head(tpm)
+
+
+up_genes<-rownames(res_df[which(res_df$change=='up'),])
+down_genes<-rownames(res_df[which(res_df$change=='down'),])
+up_enirch <-enrichGO(up_genes,OrgDb = org.Mm.eg.db,keyType = 'ENSEMBL',ont='bp')
+down_enirch <-enrichGO(down_genes,OrgDb = org.Mm.eg.db,keyType = 'ENSEMBL',ont='bp')
+barplot(up_enrich)
+barplot(down_enirch)
+
+save.image(file="deg.Rdata")
+#The end for deg
+
+
+
+
+
+
+
+
+# 2. CHIP-Seq 
+
+bowtie2 -p 10 -x /fdb/igenomes/Mus_musculus/Ensembl/GRCm38/Sequence/Bowtie2Index/genome -U SRR8903672.fastq |samtools sort -@ 10 -o s3672.bam -
+#call peak of CHIPseq
+macs2 callpeak -t s3672.bam -c s3676.bam -g mm -B -n rep1
+macs2 callpeak -t s3673.bam -c s3676.bam -g mm -B -n rep2
+
+
+library(pacman)
+pacman::p_load("ChIPseeker","org.Mm.eg.db","ggplot2","plotrix","GenomicFeatures")
+
+rep1_narropeak<-readPeakFile('rep1_peaks.narrowPeak')
+rep2_narropeak<-readPeakFile('rep2_peaks.narrowPeak')
+
+rep1_narropeak<-readPeakFile('rep1_peaks.narrowPeak')
+rep2_narropeak<-readPeakFile('rep2_peaks.narrowPeak')
+file_list<-list('rep1_peaks.narrowPeak','rep2_peaks.narrowPeak')
+txdb<-makeTxDbFromGFF("/fdb/ensembl/pub/release-100/gtf/mus_musculus/Mus_musculus.GRCm38.100.chr.gtf")
+
+#venn plot
+vennplot(list(rep1=rep1_narropeak,rep2=rep2_narropeak),by='gplots')
+
+#peak Anno
+rep1_peakAnno<-annotatePeak(rep1_narropeak,tssRegion = c(-3000,3000),TxDb=txdb,annoDb = "org.Mm.eg.db")
+rep2_peakAnno<-annotatePeak(rep2_narropeak,tssRegion = c(-3000,3000),TxDb=txdb,annoDb = "org.Mm.eg.db")
+peakAnnoList<-lapply(file_list,annotatePeak,TxDb=txdb,tssRegion = c(-3000,3000))
+
+
+plotAnnoPie(rep1_peakAnno)
+plotAnnoPie(rep2_peakAnno)
+
+
+
+pie_data1<-ifelse(rep1_peakAnno@anno$distanceToTSS>(-1000) & rep1_peakAnno@anno$distanceToTSS <400,'Proximal',
+                  ifelse(rep1_peakAnno@anno$distanceToTSS>(-10000) & rep1_peakAnno@anno$distanceToTSS<(-1000),'Distal upstream',
+                         ifelse(rep1_peakAnno@anno$distanceToTSS>400 & rep1_peakAnno@anno$distanceToTSS<10000,'Distal downstream','none')))
+freq<-table(pie_data1)/length(pie_data1)
+freq<-freq[-3]
+label<-c('Distal downstream(48%)','Distal upstream(36%)','Proximal(10%)')
+pie3D(x=freq,labels=label,col=c('red','green','yellow'),radius=2,labelcex=1)
+
+
+
+
+Distal_index<-which(pie_data1=='Distal downstream'|pie_data1=='Distal upstream')
+Proximal_index<-which(pie_data1=='Proximal')
+Distal.1_df<-as.data.frame(rep1_peakAnno@anno)[Distal_index,]
+Proximal.1_df<-as.data.frame(rep1_peakAnno@anno)[Proximal_index,]
+
+
+
+#get seq for MEME 
+get_bed<-function(peakAnno_df,output){
+    df<-data.frame(row.names = 1:nrow(peakAnno_df))
+    df$name<-peakAnno_df[,'seqnames']
+    df$start<-as.integer((peakAnno_df[,'end']+peakAnno_df[,'start'])*0.5)-1000
+    df$start<-ifelse(df$start<0,0,df$start)
+    df$end<-as.integer((peakAnno_df[,'end']+peakAnno_df[,'start'])*0.5)+1000
+    df$peak<-peakAnno_df[,'V4']
+    df$intensity<-peakAnno_df[,'V9']
+    write.table(df,output,row.names = F,col.names = F,sep="\t",quote = F)
+    }
+get_bed(Distal.1_df,'distal.1.bed')
+get_bed(Proximal.1_df,'proximal.1.bed')
+save.image("chip.Rdata")
+****** in bash******
+bedtools getfasta -fi /fdb/igenomes/Mus_musculus/Ensembl/GRCm38/Sequence/Bowtie2Index/genome.fa -bed distal.1.bed -fo distal.1.fa
+bedtools getfasta -fi /fdb/igenomes/Mus_musculus/Ensembl/GRCm38/Sequence/Bowtie2Index/genome.fa -bed proximal.1.bed -fo proximal.1.fa
+拿proximal.1.fa 在https://meme-suite.org/meme/tools/meme-chip网站找motif
+********************
+
+### 3. combined analysis
+shared_up_genes<-intersect(rep1_peakAnno@anno$geneId,up_genes)
