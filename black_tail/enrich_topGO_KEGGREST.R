@@ -51,6 +51,28 @@ resultKS <- runTest(GOdata, algorithm = "weight01", statistic = "ks")
 tab <- GenTable(GOdata, raw.p.value = resultKS, topNodes = 15, numChar = 120)
 write.csv(tab,file = paste0(file_name,".topGO.csv"),row.names = F)
 
+# Assuming 'resultTable' is the output from GenTable
+significantGOs <- tab$GO.ID
+genesForAllTerms <- genesInTerm(GOdata, significantGOs)
+
+
+df <- data.frame(
+		   GO = rep(names(genesForAllTerms), sapply(genesForAllTerms, length)),
+		     Gene = unlist(genesForAllTerms, use.names = FALSE)
+		   )
+
+colnames(df)<-c("GO","geneID")
+
+
+b2z_data <- read.table("../../00.data/black2zebra_gene_name.txt", header =FALSE, sep = " ", stringsAsFactors = FALSE,fill=TRUE)
+colnames(b2z_data)<- c("geneID", "col2", "geneName")
+merged_df <- df %>%
+	  left_join(b2z_data[, c("geneID", "geneName")], by = "geneID",relationship = "many-to-many")
+
+  merged_df$geneName[is.na(merged_df$geneName)] <- ""
+
+  write.csv(merged_df, "merged_output.csv", row.names = FALSE)
+
 # Create the rainbow bar plot with ggplot2
  num_terms <- nrow(tab)
 tab$Term<- stringr::str_wrap(tab$Term, width = 30)
@@ -83,40 +105,54 @@ p2.list<-lapply(pathways.list, unique)
 
 pVals.by.pathway <- t(sapply(names(result_list),
 	function(pathway) {
-		pathway.genes <- result_list[[pathway]]
-		list.genes.in.pathway <- intersect(names(pv2), pathway.genes)
-		list.genes.not.in.pathway <- setdiff(names(pv2), list.genes.in.pathway)
-		scores.in.pathway <- pv2[list.genes.in.pathway]
-		scores.not.in.pathway <- pv2[list.genes.not.in.pathway]
-		if (length(scores.in.pathway) > 0){
-			p.value <- wilcox.test(scores.in.pathway, scores.not.in.pathway, alternative = "less")$p.value
-		} else{
-			p.value <- NA
+	pathway.genes <- result_list[[pathway]]
+	list.genes.in.pathway <- intersect(names(pv2), pathway.genes)
+	list.genes.not.in.pathway <- setdiff(names(pv2), list.genes.in.pathway)
+	scores.in.pathway <- pv2[list.genes.in.pathway]
+	scores.not.in.pathway <- pv2[list.genes.not.in.pathway]
+    if (length(scores.in.pathway) > 0){
+  	 p.value <- wilcox.test(scores.in.pathway, scores.not.in.pathway, alternative = "less")$p.value
+	} else{													        p.value <- NA
 		}
-		return(c(p.value = p.value, Annotated = length(list.genes.in.pathway)))
-	}
-))
-outdat <- data.frame(pathway.code = rownames(pVals.by.pathway))
-outdat$pathway.name <- p2.list[outdat$pathway.code]
-outdat$p.value <- pVals.by.pathway[,"p.value"]
-outdat$Annotated <- pVals.by.pathway[,"Annotated"]
-outdat$pathway.name <- as.character(outdat$pathway.name)
-outdat$pathway.name <- stringr::str_wrap(outdat$pathway.name, width = 30)
-outdat <- outdat[order(outdat$p.value),]
-write.csv(outdat,file = paste0(file_name,".KEGG.csv"),row.names = F)
+	return(list(p.value = p.value, 
+                    Annotated = length(list.genes.in.pathway),     
+                    Genes = list.genes.in.pathway))
+			}
+				))
+oo<-as.data.frame(pVals.by.pathway)
+oo<-subset(oo,p.value<0.1)
+oo$pathway.name <- p2.list[rownames(oo)]
+oo$p.value=as.numeric(oo$p.value)
+oo<-oo[order(oo$p.value),]
+list_cols <- sapply(oo, class) == "list"
+list_cols
+oo[list_cols] <- lapply(oo[list_cols], function(col) {
+		       sapply(col, function(cell) {
+		             paste(unlist(cell), collapse = ",")
+							       })
+		   })
+oo<-oo[,c("p.value","pathway.name","Annotated","Genes")]
+write.csv(oo,file=paste0(file_name,".KEGG.csv"),row.names = F)
+
+
 
 ###draw KEGG barplot
-plotdat <- outdat[1:10,]
-
-pp<-ggplot(plotdat, aes(x = -log10(p.value), y = reorder(pathway.name, -log10(p.value)), fill = Annotated)) + geom_bar(stat = "identity") + labs(x = "-log10(P-Value)", y = NULL, fill = "# Genes") + scale_fill_gradient(low = "red", high = "blue")
+if(nrow(oo)>0){
+plotdat <- oo
+plotdat$Annotated <- as.numeric(plotdat$Annotated)
+plotdat$p.value <- as.numeric(plotdat$p.value)
+pp <- ggplot(plotdat, aes(x = -log10(p.value), y = reorder(pathway.name, -log10(p.value)), fill = Annotated)) +
+  geom_bar(stat = "identity") +
+  labs(x = "-log10(P-Value)", y = NULL, fill = "# Genes") +
+  scale_fill_gradient(low = "red", high = "blue")
 tiff(filename = "KEGG.bar.tiff",res = 300,width = 160,height = 100,compression = "lzw",units = "mm")
 par(mgp=c(1.5,0.5,0),cex.axis=0.7,mar=c(2.5,2.5,2,0.5)+0.1)
 print(pp)
 dev.off()
-
+}
 
 ######################
-
+print(paste0(file_name,"is done!"))
 setwd("../")
 
 }
